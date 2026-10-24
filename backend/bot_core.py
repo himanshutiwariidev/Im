@@ -2,6 +2,7 @@ import time
 import json
 import os
 import hashlib
+import random
 import threading
 from datetime import datetime
 from playwright.sync_api import sync_playwright
@@ -13,6 +14,82 @@ except ModuleNotFoundError:
 
 LEADS_URL     = "https://seller.indiamart.com/bltxn/?pref=recent"
 SETTINGS_FILE = "bot_settings.json"
+
+STEALTH_JS = """
+// 1. Mask navigator.webdriver
+Object.defineProperty(navigator, 'webdriver', {
+    get: () => undefined,
+    configurable: true
+});
+try {
+    delete Object.getPrototypeOf(navigator).webdriver;
+} catch(e) {}
+
+// 2. Ensure window.chrome exists and has standard desktop properties
+window.chrome = window.chrome || {};
+window.chrome.app = window.chrome.app || {
+    isInstalled: false,
+    InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
+    RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' }
+};
+window.chrome.runtime = window.chrome.runtime || {
+    OnInstalledReason: { CHROME_UPDATE: 'chrome_update', INSTALL: 'install' },
+    OnRestartRequiredReason: { APP_UPDATE: 'app_update' },
+    PlatformArch: { ARM: 'arm', ARM64: 'arm64', X86_64: 'x86-64' },
+    PlatformOs: { MAC: 'mac', WIN: 'win', LINUX: 'linux' },
+    connect: function() {},
+    sendMessage: function() {}
+};
+window.chrome.csi = window.chrome.csi || function() {
+    return { onloadT: Date.now(), pageT: 2840, startE: Date.now(), tran: 15 };
+};
+window.chrome.loadTimes = window.chrome.loadTimes || function() {
+    return {
+        commitLoadTime: Date.now() / 1000,
+        connectionInfo: 'h2',
+        finishDocumentLoadTime: Date.now() / 1000,
+        finishLoadTime: Date.now() / 1000,
+        firstPaintAfterLoadTime: 0,
+        firstPaintTime: Date.now() / 1000,
+        navigationType: 'Other',
+        npnNegotiatedProtocol: 'h2',
+        requestTime: Date.now() / 1000,
+        startLoadTime: Date.now() / 1000,
+        wasAlternateProtocolAvailable: false,
+        wasFetchedViaSpdy: true,
+        wasNpnNegotiated: true
+    };
+};
+
+// 3. Spoof Plugins & MimeTypes
+if (!navigator.plugins || navigator.plugins.length === 0) {
+    const fakePlugins = [
+        { name: "Chrome PDF Plugin", filename: "internal-pdf-viewer", description: "Portable Document Format" },
+        { name: "Chrome PDF Viewer", filename: "mhjfbmdgcfjbbpaeojofohoefgiehjai", description: "" },
+        { name: "Native Client", filename: "internal-nacl-plugin", description: "" }
+    ];
+    Object.defineProperty(navigator, 'plugins', {
+        get: () => fakePlugins,
+        configurable: true
+    });
+}
+
+// 4. Permissions API
+if (navigator.permissions && navigator.permissions.query) {
+    const originalQuery = navigator.permissions.query;
+    navigator.permissions.query = (parameters) => (
+        parameters && parameters.name === 'notifications' ?
+            Promise.resolve({ state: Notification.permission }) :
+            originalQuery(parameters)
+    );
+}
+
+// 5. Languages
+Object.defineProperty(navigator, 'languages', {
+    get: () => ['en-US', 'en', 'hi'],
+    configurable: true
+});
+"""
 
 
 def load_settings():
@@ -95,23 +172,74 @@ class IndiaMartBot:
     def confirm_login(self):
         self._login_confirmed = True
 
-    def _check_already_logged_in(self):
+    def _apply_stealth(self, context=None, page=None):
+        """Injects stealth scripts to hide automation flags and emulate genuine Chrome."""
+        if context:
+            try:
+                context.add_init_script(STEALTH_JS)
+            except Exception:
+                pass
+        if page:
+            self._apply_stealth_to_page(page)
+
+    def _apply_stealth_to_page(self, page):
+        """Applies stealth evasion scripts into an active or new page."""
+        if not page:
+            return
         try:
-            current_url = self.page.url or ""
+            page.add_init_script(STEALTH_JS)
+        except Exception:
+            pass
+        try:
+            page.evaluate(STEALTH_JS)
+        except Exception:
+            pass
+
+    def _find_indiamart_page(self):
+        """Scans all contexts and tabs (including Private / Incognito windows) for an active IndiaMart page."""
+        if not self.browser:
+            return None, None
+        try:
+            for ctx in self.browser.contexts:
+                for p in ctx.pages:
+                    try:
+                        u = (p.url or "").lower()
+                        if "seller.indiamart.com" in u or "indiamart.com/bltxn" in u:
+                            return ctx, p
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        return None, None
+
+    def _simulate_human_presence(self):
+        """Subtly moves the cursor to prevent IndiaMart inactivity popups and idle logout."""
+        try:
+            if self.page:
+                self.page.mouse.move(random.randint(120, 500), random.randint(100, 400))
+        except Exception:
+            pass
+
+    def _check_already_logged_in(self, page=None):
+        target_page = page or self.page
+        if not target_page:
+            return False
+        try:
+            current_url = (target_page.url or "").lower()
             if "seller.indiamart.com" not in current_url:
-                if not self._safe_goto(LEADS_URL, timeout=30000):
+                if not self._safe_goto(LEADS_URL, timeout=30000, page=target_page):
                     return False
 
-            # Only a visible leads listing counts as logged in. Anything ambiguous
-            # falls through to the manual login step (via the Live Browser).
             try:
-                found = self.page.wait_for_selector(
-                    'xpath=//input[@id="mobNo"] | //div[contains(@id,"BLCard")] | //div[@id="bl_listing"]',
-                    timeout=15000
+                found = target_page.wait_for_selector(
+                    'xpath=//input[@id="mobNo"] | //div[contains(@id,"BLCard")] | //div[@id="bl_listing"] | //span[contains(@class,"usrName")]',
+                    timeout=12000
                 )
                 tag_id = found.get_attribute("id") or ""
                 return tag_id != "mobNo"
             except Exception:
+                if "bltxn" in (target_page.url or ""):
+                    return target_page.locator('input#mobNo').count() == 0
                 return False
         except Exception:
             return False
@@ -130,96 +258,107 @@ class IndiaMartBot:
             self._reused_browser = False
 
             if chrome_manager.is_cdp_available():
-                self.log("🌐 Attaching to your active Chrome browser (CDP)...")
+                self.log("🌐 Attaching to active Chrome browser (CDP)...")
                 self.browser = self.playwright.chromium.connect_over_cdp(chrome_manager.CDP_URL)
                 self._reused_browser = True
 
-                # Locate the exact tab and context where the CRM is currently open
-                crm_page = None
-                target_context = None
-
+                # Apply stealth across all existing contexts
                 for ctx in self.browser.contexts:
+                    self._apply_stealth(ctx)
                     for p in ctx.pages:
-                        try:
-                            u = p.url.lower()
-                            if ":8000" in u or "localhost" in u:
-                                crm_page = p
-                                target_context = ctx
-                                break
-                        except Exception:
-                            pass
+                        self._apply_stealth_to_page(p)
+
+                # Check if an IndiaMart tab is ALREADY open in ANY window (including Private/Incognito)
+                indiamart_ctx, indiamart_page = self._find_indiamart_page()
+
+                if indiamart_page:
+                    self.log("🌐 Found active IndiaMart tab (Private / Active window) — attaching directly!")
+                    self.page = indiamart_page
+                    context = indiamart_ctx
+                    self._apply_stealth_to_page(self.page)
+                else:
+                    # Locate CRM tab or context
+                    crm_page = None
+                    target_context = None
+
+                    for ctx in self.browser.contexts:
+                        for p in ctx.pages:
+                            try:
+                                u = (p.url or "").lower()
+                                if ":8000" in u or "localhost" in u:
+                                    crm_page = p
+                                    target_context = ctx
+                                    break
+                            except Exception:
+                                pass
+                        if crm_page:
+                            break
+
+                    if not target_context:
+                        target_context = self.browser.contexts[0] if self.browser.contexts else self.browser.new_context()
+
+                    self.page = None
                     if crm_page:
-                        break
-
-                if not target_context:
-                    target_context = self.browser.contexts[0] if self.browser.contexts else self.browser.new_context()
-
-                # Open IndiaMart in a new tab inside the exact same Chrome profile and window as the CRM
-                self.page = None
-                if crm_page:
-                    self.log("🌐 Opening IndiaMart in a new tab within your CRM profile...")
-                    try:
-                        with crm_page.expect_popup(timeout=8000) as popup_info:
-                            crm_page.evaluate(f"() => window.open('{LEADS_URL}', '_blank')")
-                        self.page = popup_info.value
-                    except Exception:
+                        self.log("🌐 Opening IndiaMart in a new tab...")
                         try:
-                            with target_context.expect_page(timeout=5000) as page_info:
+                            with crm_page.expect_popup(timeout=8000) as popup_info:
                                 crm_page.evaluate(f"() => window.open('{LEADS_URL}', '_blank')")
-                            self.page = page_info.value
+                            self.page = popup_info.value
                         except Exception:
-                            pass
+                            try:
+                                with target_context.expect_page(timeout=5000) as page_info:
+                                    crm_page.evaluate(f"() => window.open('{LEADS_URL}', '_blank')")
+                                self.page = page_info.value
+                            except Exception:
+                                pass
 
-                if not self.page:
-                    self.log("🌐 Opening IndiaMart in a new tab in Chrome...")
-                    self.page = target_context.new_page()
+                    if not self.page:
+                        self.log("🌐 Opening IndiaMart in Chrome...")
+                        self.page = target_context.new_page()
 
-                context = target_context
+                    context = target_context
+                    self._apply_stealth(context, self.page)
 
             else:
-                self.log("🌐 Launching Google Chrome (persistent profile, NOT incognito)...")
+                self.log("🌐 Launching Google Chrome (stealth mode, anti-detection)...")
                 profile_dir = os.path.expanduser("~/Library/Application Support/IndiaMart-CRM-ChromeProfile")
                 os.makedirs(profile_dir, exist_ok=True)
 
+                launch_kwargs = {
+                    "user_data_dir": profile_dir,
+                    "headless": False,
+                    "slow_mo": 0,
+                    "ignore_default_args": ["--enable-automation"],
+                    "args": [
+                        "--disable-blink-features=AutomationControlled",
+                        "--no-sandbox",
+                        "--disable-dev-shm-usage",
+                        "--disable-background-timer-throttling",
+                        "--disable-backgrounding-occluded-windows",
+                        "--disable-renderer-backgrounding",
+                        "--no-first-run",
+                        "--no-default-browser-check",
+                        "--disable-infobars",
+                        "--window-position=0,0",
+                        "--window-size=1366,768",
+                    ],
+                }
+
                 try:
                     self.browser = self.playwright.chromium.launch_persistent_context(
-                        user_data_dir=profile_dir,
                         channel="chrome",
-                        headless=False,
-                        slow_mo=0,
-                        args=[
-                            "--disable-blink-features=AutomationControlled",
-                            "--no-sandbox",
-                            "--disable-gpu",
-                            "--disable-dev-shm-usage",
-                            "--disable-background-timer-throttling",
-                            "--disable-backgrounding-occluded-windows",
-                            "--disable-renderer-backgrounding",
-                            "--window-position=0,0",
-                            "--window-size=1366,768",
-                        ],
+                        **launch_kwargs
                     )
                 except Exception:
                     self.browser = self.playwright.chromium.launch_persistent_context(
-                        user_data_dir=profile_dir,
-                        headless=False,
-                        slow_mo=0,
-                        args=[
-                            "--disable-blink-features=AutomationControlled",
-                            "--no-sandbox",
-                            "--disable-gpu",
-                            "--disable-dev-shm-usage",
-                            "--disable-background-timer-throttling",
-                            "--disable-backgrounding-occluded-windows",
-                            "--disable-renderer-backgrounding",
-                            "--window-position=0,0",
-                            "--window-size=1366,768",
-                        ],
+                        **launch_kwargs
                     )
 
                 context = self.browser
+                self._apply_stealth(context)
                 self._try_load_cookies(context)
                 self.page = self.browser.pages[0] if self.browser.pages else self.browser.new_page()
+                self._apply_stealth_to_page(self.page)
 
             self.page.set_default_timeout(60000)
 
@@ -233,23 +372,34 @@ class IndiaMartBot:
             except Exception as e:
                 self.log(f"⚠️  Page navigation warning: {str(e)[:100]}")
 
-            # Check if user is already logged in on this Chrome profile
-            self.log("🔎  Checking for existing IndiaMart session in this profile...")
+            # Check if user is already logged in
+            self.log("🔎  Checking for active IndiaMart session...")
             already_logged_in = self._check_already_logged_in()
 
             if already_logged_in:
-                self.log("✅  Already logged in on this profile — skipping manual login.")
+                self.log("✅  Already logged in — skipping manual login.")
                 self._login_confirmed = True
             else:
                 self.set_status("waiting", "Waiting for login...")
                 self.log("\n" + "="*50)
-                self.log("👉  Log in to IndiaMart in the newly opened tab,")
+                self.log("👉  Log in to IndiaMart (in Normal or Private window),")
                 self.log("    then click  ✅ LOGIN DONE.")
                 self.log("="*50)
 
                 self._login_confirmed = False
                 while not self._login_confirmed and self.running:
-                    time.sleep(0.3)
+                    # In case the user logs into IndiaMart in a Private Window or another tab
+                    found_ctx, found_page = self._find_indiamart_page()
+                    if found_page:
+                        if found_page != self.page:
+                            self.page = found_page
+                            context = found_ctx
+                            self._apply_stealth_to_page(self.page)
+                        if self._check_already_logged_in(self.page):
+                            self.log("✅  IndiaMart login detected in window!")
+                            self._login_confirmed = True
+                            break
+                    time.sleep(0.5)
 
             if not self.running:
                 self._cleanup()
@@ -291,7 +441,7 @@ class IndiaMartBot:
             self._apply_foreign_filter_once()
 
             self.set_status("running", "👁 Watching Leads...")
-            self.log(f"\n🚀  Bot running!")
+            self.log(f"\n🚀  Bot running (Stealth active, anti-detection enabled)!")
             self.log(f"    Keywords: {len(keywords)} | Priority: {len(priority_keywords)}")
             self.log(f"    Countries: {', '.join(countries)}")
             self.log(f"    Phone required: {require_phone}\n")
@@ -305,6 +455,11 @@ class IndiaMartBot:
                 scan_speed = self.settings.get("scan_speed", 0.5)
                 self._ensure_correct_page()
                 self._dismiss_inactive_popup()
+
+                # Periodically simulate subtle human presence to prevent idle timeout
+                if watch_count % 40 == 0:
+                    self._simulate_human_presence()
+
                 picked = self._watch_and_pick(
                     keywords, priority_keywords,
                     countries, require_phone, watch_count
@@ -314,7 +469,9 @@ class IndiaMartBot:
                     self._load_fresh_leads()
                     watch_count = 0
                 else:
-                    time.sleep(scan_speed)
+                    # Micro-jitter to prevent mechanical bot polling detection
+                    jitter = random.uniform(-0.05, 0.12)
+                    time.sleep(max(0.2, scan_speed + jitter))
 
         except Exception as e:
             self.log(f"🚨 Fatal error: {e}")
@@ -461,15 +618,19 @@ class IndiaMartBot:
             dismissed = self.page.evaluate("""
                 () => {
                     const byId = document.getElementById('Yes');
-                    if (byId) { byId.click(); return 'id=Yes'; }
+                    if (byId && byId.offsetParent !== null) { byId.click(); return 'id=Yes'; }
                     const byClass = document.querySelector('button.send_quo');
-                    if (byClass) { byClass.click(); return 'class=send_quo'; }
-                    for (const btn of document.querySelectorAll('button')) {
-                        if (btn.innerText.includes('Fresh Leads')) {
-                            btn.click(); return 'text';
+                    if (byClass && byClass.offsetParent !== null) { byClass.click(); return 'class=send_quo'; }
+                    for (const btn of document.querySelectorAll('button, a.btn, input[type="button"]')) {
+                        const txt = (btn.innerText || btn.value || '').trim();
+                        if (txt.includes('Fresh Leads') || txt.includes('Stay') || txt.includes('Continue') || txt === 'Yes' || txt === 'OK') {
+                            if (btn.offsetParent !== null) {
+                                btn.click();
+                                return 'text=' + txt;
+                            }
                         }
                     }
-                    const modal = document.querySelector('.BL_admin_modal');
+                    const modal = document.querySelector('.BL_admin_modal, [class*="admin_modal"], [class*="inactivity"]');
                     if (modal && window.getComputedStyle(modal).display !== 'none') {
                         modal.style.display = 'none'; return 'hidden';
                     }
@@ -477,7 +638,7 @@ class IndiaMartBot:
                 }
             """)
             if dismissed:
-                self.log(f"🔔  Popup dismissed ✅")
+                self.log(f"🔔  Inactivity prompt handled ({dismissed}) ✅")
                 time.sleep(0.5)
         except Exception:
             pass
@@ -503,15 +664,18 @@ class IndiaMartBot:
                 time.sleep(3)
 
     # ── Safe navigation ─────────────────────────────────────────
-    def _safe_goto(self, url, timeout=60000):
+    def _safe_goto(self, url, timeout=60000, page=None):
+        target = page or self.page
+        if not target:
+            return False
         try:
-            self.page.goto(url, wait_until="commit", timeout=timeout)
+            target.goto(url, wait_until="commit", timeout=timeout)
         except Exception as e:
             if "interrupted by another navigation" not in str(e):
                 self.log(f"⚠️  Navigation issue: {str(e)[:120]}")
                 return False
         try:
-            self.page.wait_for_load_state("domcontentloaded", timeout=timeout)
+            target.wait_for_load_state("domcontentloaded", timeout=timeout)
         except Exception:
             pass
         return True
@@ -522,16 +686,24 @@ class IndiaMartBot:
             if os.path.exists("session_cookies.json"):
                 with open("session_cookies.json", "r") as f:
                     cookies = json.load(f)
-                context.add_cookies(cookies)
-                self.log("🍪  Saved session loaded!")
-        except Exception:
-            pass
+                clean_cookies = []
+                for c in cookies:
+                    clean = {k: v for k, v in c.items() if k in ("name", "value", "domain", "path", "expires", "httpOnly", "secure", "sameSite")}
+                    if clean.get("sameSite") not in ("Lax", "None", "Strict"):
+                        clean.pop("sameSite", None)
+                    clean_cookies.append(clean)
+                context.add_cookies(clean_cookies)
+                self.log("🍪  Saved session cookies restored!")
+        except Exception as e:
+            self.log(f"⚠️  Cookie restore note: {e}")
 
     def _save_cookies(self, context):
         try:
             cookies = context.cookies()
-            with open("session_cookies.json", "w") as f:
-                json.dump(cookies, f)
+            if cookies:
+                with open("session_cookies.json", "w") as f:
+                    json.dump(cookies, f, indent=2)
+                self.log(f"💾  Session saved ({len(cookies)} cookies stored for auto-reconnect)")
         except Exception:
             pass
 
@@ -674,8 +846,21 @@ class IndiaMartBot:
 
                 btn = self._get_contact_button(best_listing)
                 if btn:
-                    btn.click()
-                    time.sleep(1)
+                    try:
+                        btn.scroll_into_view_if_needed(timeout=1500)
+                    except Exception:
+                        pass
+                    # Natural human reaction hesitation (150ms - 300ms)
+                    time.sleep(random.uniform(0.15, 0.30))
+                    # Hover to generate genuine pointer / mouseover telemetry
+                    try:
+                        btn.hover(timeout=1500)
+                    except Exception:
+                        pass
+                    time.sleep(random.uniform(0.06, 0.15))
+                    # Humanized click duration
+                    btn.click(delay=random.randint(70, 130))
+                    time.sleep(random.uniform(0.8, 1.3))
                     self.log("    🖱️  Clicked 'Contact Buyer Now'!")
                     if offer_id:
                         self.picked_ids.add(offer_id)
