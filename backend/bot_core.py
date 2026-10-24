@@ -14,6 +14,7 @@ except ModuleNotFoundError:
     from backend import chrome_manager
 
 LEADS_URL     = "https://seller.indiamart.com/bltxn/?pref=recent"
+SELLER_URL    = "https://seller.indiamart.com/"
 SETTINGS_FILE = "bot_settings.json"
 
 STEALTH_JS = """
@@ -226,6 +227,14 @@ class IndiaMartBot:
         if not target_page:
             return False
         try:
+            # If page is 403 Forbidden, definitely not authenticated
+            try:
+                page_text = (target_page.content() or "").lower()
+                if "403 forbidden" in page_text or (target_page.title() or "").strip() == "403":
+                    return False
+            except Exception:
+                pass
+
             current_url = (target_page.url or "").lower()
             if "login" in current_url or "signin" in current_url:
                 return False
@@ -369,11 +378,25 @@ class IndiaMartBot:
                     profile_dir = os.path.expanduser("~/.config/indiamart-crm-profile")
                 os.makedirs(profile_dir, exist_ok=True)
 
+                desktop_ua = (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/131.0.0.0 Safari/537.36"
+                )
                 launch_kwargs = {
                     "user_data_dir": profile_dir,
                     "headless": False,
                     "slow_mo": 0,
+                    "user_agent": desktop_ua,
+                    "viewport": {"width": 1366, "height": 768},
                     "ignore_default_args": ["--enable-automation"],
+                    "extra_http_headers": {
+                        "Accept-Language": "en-US,en;q=0.9,hi;q=0.8",
+                        "Sec-Ch-Ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+                        "Sec-Ch-Ua-Mobile": "?0",
+                        "Sec-Ch-Ua-Platform": '"Windows"',
+                        "Upgrade-Insecure-Requests": "1",
+                    },
                     "args": [
                         "--disable-blink-features=AutomationControlled",
                         "--no-sandbox",
@@ -427,13 +450,24 @@ class IndiaMartBot:
             else:
                 self.set_status("waiting", "Waiting for login...")
                 self.log("\n" + "="*50)
-                self.log("👉  Log in to IndiaMart (in Normal or Private window),")
+                self.log("👉  Log in to IndiaMart in the Live Browser,")
                 self.log("    then click  ✅ LOGIN DONE.")
                 self.log("="*50)
 
+                # Direct browser to Seller Login page so user sees login input (not 403)
+                self.log("👉  Navigating Live Browser to IndiaMart Login page...")
+                self._safe_goto(SELLER_URL, timeout=60000)
+
                 self._login_confirmed = False
                 while not self._login_confirmed and self.running:
-                    # In case the user logs into IndiaMart in a Private Window or another tab
+                    # If page shows 403, redirect to SELLER_URL
+                    try:
+                        content = (self.page.content() or "").lower()
+                        if "403 forbidden" in content or (self.page.title() or "").strip() == "403":
+                            self._safe_goto(SELLER_URL, timeout=30000)
+                    except Exception:
+                        pass
+
                     found_ctx, found_page = self._find_indiamart_page()
                     if found_page:
                         if found_page != self.page:
@@ -708,7 +742,11 @@ class IndiaMartBot:
         if not target:
             return False
         try:
-            target.goto(url, wait_until="commit", timeout=timeout)
+            resp = target.goto(url, wait_until="commit", timeout=timeout)
+            if resp and resp.status == 403 and "bltxn" in url:
+                self.log("⚠️  Received 403 on leads page — redirecting to Seller Login...")
+                target.goto(SELLER_URL, wait_until="commit", timeout=timeout)
+                return True
         except Exception as e:
             if "interrupted by another navigation" not in str(e):
                 self.log(f"⚠️  Navigation issue: {str(e)[:120]}")
