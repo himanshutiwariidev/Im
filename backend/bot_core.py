@@ -227,21 +227,62 @@ class IndiaMartBot:
             return False
         try:
             current_url = (target_page.url or "").lower()
+            if "login" in current_url or "signin" in current_url:
+                return False
+
             if "seller.indiamart.com" not in current_url:
                 if not self._safe_goto(LEADS_URL, timeout=30000, page=target_page):
                     return False
 
             try:
-                found = target_page.wait_for_selector(
-                    'xpath=//input[@id="mobNo"] | //div[contains(@id,"BLCard")] | //div[@id="bl_listing"] | //span[contains(@class,"usrName")]',
-                    timeout=12000
-                )
-                tag_id = found.get_attribute("id") or ""
-                return tag_id != "mobNo"
+                target_page.wait_for_load_state("domcontentloaded", timeout=10000)
             except Exception:
-                if "bltxn" in (target_page.url or ""):
-                    return target_page.locator('input#mobNo').count() == 0
-                return False
+                pass
+
+            # 1. If any login form / mobile input is visible, definitely NOT logged in
+            try:
+                login_inputs = target_page.locator('input#mobNo, input[name="mobNo"], input[placeholder*="Mobile"], input[type="tel"]').all()
+                for inp in login_inputs:
+                    try:
+                        if inp.is_visible():
+                            return False
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            # 2. Check for definite logged-in seller markers:
+            # - Actual BLCard lead listings
+            # - Contact Buyer Now buttons
+            # - Authenticated seller profile / logout button
+            try:
+                lead_count = target_page.locator('div[id^="BLCard"]').count()
+                if lead_count > 0:
+                    return True
+
+                btn_count = target_page.locator('.BuyLdC_btn, button.BuyLdC_btn, .btnCBN, button:has-text("Contact Buyer Now")').count()
+                if btn_count > 0:
+                    return True
+
+                profile_count = target_page.locator('a[href*="logout"], a[href*="signout"], span.usrName, .user_profile, .cst_pnl, .userProfile, div.glusr').count()
+                if profile_count > 0:
+                    return True
+            except Exception:
+                pass
+
+            # 3. Wait briefly (up to 5s) to see if lead cards or seller profile loads
+            try:
+                found = target_page.wait_for_selector(
+                    'xpath=//div[contains(@id,"BLCard")] | //button[contains(@class,"BuyLdC_btn")] | //a[contains(@href,"logout")] | //span[contains(@class,"usrName")]',
+                    timeout=5000
+                )
+                if found:
+                    return True
+            except Exception:
+                pass
+
+            # If no authenticated elements are present, it is NOT logged in!
+            return False
         except Exception:
             return False
 
@@ -423,22 +464,16 @@ class IndiaMartBot:
                         self.set_status("error", "Login Failed")
                         self._cleanup()
                         return
-                    found = self.page.wait_for_selector(
-                        'xpath=//input[@id="mobNo"] | //div[contains(@id,"BLCard")] | //div[@id="bl_listing"]',
-                        timeout=20000
-                    )
-                    tag_id = ""
-                    try:
-                        tag_id = found.get_attribute("id") or ""
-                    except Exception:
-                        pass
-                    if tag_id == "mobNo":
-                        self.log("❌  Login failed.")
-                        self.set_status("error", "Login Failed")
-                        self._cleanup()
-                        return
-                except Exception:
-                    self.log("⚠️  Could not confirm login marker — continuing anyway.")
+
+                    if not self._check_already_logged_in(self.page):
+                        time.sleep(3)
+                        if not self._check_already_logged_in(self.page):
+                            self.log("❌  Login failed — active IndiaMart session not detected.")
+                            self.set_status("error", "Login Failed")
+                            self._cleanup()
+                            return
+                except Exception as e:
+                    self.log(f"⚠️  Login verification note: {e}")
 
             self._save_cookies(context)
             self.log("✅  IndiaMart session confirmed!")
