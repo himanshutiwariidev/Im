@@ -1,0 +1,14 @@
+{
+  "keywords": [
+    "dolo"
+  ],
+  "priority_keywords": [
+    "ivermectin"
+  ],
+  "countries": [
+    "india"
+  ],
+  "scan_speed": 0.5,
+  "require_phone": true,
+  "debug_skips": false
+}
