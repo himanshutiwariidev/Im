@@ -1,0 +1,9 @@
+# Secrets / per-install data — never commit
+.env
+session_cookies.json
+leads.db
+
+venv/
+__pycache__/
+*.pyc
+.DS_Store

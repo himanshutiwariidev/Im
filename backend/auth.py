@@ -1,10 +1,11 @@
 import hmac
+import os
 import secrets
 import time
 
-# TODO: change these before real client use.
-ADMIN_USERNAME = "admin"
-ADMIN_PASSWORD = "admin123"
+# Set CRM_USER / CRM_PASS in the environment (.env on the server).
+ADMIN_USERNAME = os.environ.get("CRM_USER", "admin")
+ADMIN_PASSWORD = os.environ.get("CRM_PASS", "admin123")
 
 SESSION_TTL = 60 * 60 * 24 * 7  # 7 days
 

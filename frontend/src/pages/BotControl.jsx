@@ -11,6 +11,9 @@ import { saveSettings, startBot, stopBot, confirmLogin } from '../api'
 
 const SPEED_OPTIONS = [0.3, 0.5, 1, 2, 3, 5]
 
+// noVNC view of the server's Chrome, proxied by nginx at /vnc/ (CRM login required).
+const LIVE_BROWSER_URL = '/vnc/vnc.html?autoconnect=1&reconnect=1&resize=scale&path=vnc/websockify'
+
 const STATUS_COLORS = {
   running: { bg: 'var(--success-bg)', color: 'var(--success)' },
   stopped: { bg: '#f0f0f4', color: 'var(--text-muted)' },
@@ -58,6 +61,7 @@ export default function BotControl({ settings, setSettings, status, logs, clearL
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [showBrowser, setShowBrowser] = useState(false)
   const seeded = useRef(false)
   const logRef = useRef(null)
 
@@ -81,6 +85,7 @@ export default function BotControl({ settings, setSettings, status, logs, clearL
   const canStart = !state || state === 'stopped' || state === 'error'
   const canStop = ['running', 'waiting', 'starting', 'stopping'].includes(state)
   const canLogin = state === 'waiting'
+  const browserOpen = canLogin || (showBrowser && canStop)
 
   function buildPayload() {
     return {
@@ -155,8 +160,8 @@ export default function BotControl({ settings, setSettings, status, logs, clearL
             <div className="login-banner">
               <IconBot />
               <div>
-                A new tab has opened in your Chrome profile. Log into your IndiaMart seller account there (if not already logged in),
-                then click <strong>Login Done</strong> below to start watching leads.
+                Log into your IndiaMart seller account in the <strong>Live Browser</strong> below,
+                then click <strong>Login Done</strong> to start watching leads. You only need to do this once.
               </div>
             </div>
           )}
@@ -184,6 +189,30 @@ export default function BotControl({ settings, setSettings, status, logs, clearL
               <img src="/botimage.webp" alt="" className="bot-illustration" />
             </div>
           </div>
+
+          {canStop && (
+            <div className="card">
+              <div className="card-header-block card-header-block--action">
+                <div className="card-header-block__left">
+                  <div className="icon-badge"><IconGlobe width={17} height={17} /></div>
+                  <div>
+                    <h3>Live Browser</h3>
+                    <p>The bot's Chrome running on the server.</p>
+                  </div>
+                </div>
+                {!canLogin && (
+                  <button className="btn btn-ghost btn-sm" onClick={() => setShowBrowser((v) => !v)}>
+                    {showBrowser ? 'Hide' : 'Show'}
+                  </button>
+                )}
+              </div>
+              {browserOpen && (
+                <div className="card-body">
+                  <iframe className="live-browser" src={LIVE_BROWSER_URL} title="Live Browser" />
+                </div>
+              )}
+            </div>
+          )}
 
           <div className="card">
             <div className="card-header-block card-header-block--action">

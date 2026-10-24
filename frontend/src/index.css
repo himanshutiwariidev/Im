@@ -667,6 +667,15 @@ table.leads-table {
   margin: 4px 0 16px;
 }
 
+.live-browser {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1366 / 768;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: #000;
+}
+
 .login-banner {
   display: flex;
   align-items: flex-start;

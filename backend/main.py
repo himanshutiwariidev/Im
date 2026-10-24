@@ -151,6 +151,12 @@ def auth_status(request: Request):
     return {"authenticated": auth.validate_session(token)}
 
 
+@app.get("/api/auth/check", dependencies=[Depends(require_auth)])
+def auth_check():
+    """Used by nginx auth_request to guard the live browser (noVNC) at /vnc/."""
+    return {"ok": True}
+
+
 @app.post("/api/auth/login")
 def auth_login(creds: Credentials, response: Response):
     if not auth.verify_login(creds.username.strip(), creds.password):

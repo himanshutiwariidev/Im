@@ -202,6 +202,8 @@ class IndiaMartBot:
                             "--disable-background-timer-throttling",
                             "--disable-backgrounding-occluded-windows",
                             "--disable-renderer-backgrounding",
+                            "--window-position=0,0",
+                            "--window-size=1366,768",
                         ],
                     )
                 except Exception:
@@ -217,6 +219,8 @@ class IndiaMartBot:
                             "--disable-background-timer-throttling",
                             "--disable-backgrounding-occluded-windows",
                             "--disable-renderer-backgrounding",
+                            "--window-position=0,0",
+                            "--window-size=1366,768",
                         ],
                     )
 
