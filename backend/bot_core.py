@@ -102,24 +102,17 @@ class IndiaMartBot:
                 if not self._safe_goto(LEADS_URL, timeout=30000):
                     return False
 
+            # Only a visible leads listing counts as logged in. Anything ambiguous
+            # falls through to the manual login step (via the Live Browser).
             try:
                 found = self.page.wait_for_selector(
                     'xpath=//input[@id="mobNo"] | //div[contains(@id,"BLCard")] | //div[@id="bl_listing"]',
-                    timeout=5000
+                    timeout=15000
                 )
                 tag_id = found.get_attribute("id") or ""
                 return tag_id != "mobNo"
             except Exception:
-                pass
-
-            current_url = self.page.url or ""
-            if "login" in current_url.lower() or "signin" in current_url.lower():
                 return False
-
-            if "seller.indiamart.com" in current_url:
-                return self.page.locator('input#mobNo').count() == 0
-
-            return False
         except Exception:
             return False
 
