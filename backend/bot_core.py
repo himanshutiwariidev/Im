@@ -1,6 +1,7 @@
 import time
 import json
 import os
+import sys
 import hashlib
 import random
 import threading
@@ -321,7 +322,10 @@ class IndiaMartBot:
 
             else:
                 self.log("🌐 Launching Google Chrome (stealth mode, anti-detection)...")
-                profile_dir = os.path.expanduser("~/Library/Application Support/IndiaMart-CRM-ChromeProfile")
+                if sys.platform == "darwin":
+                    profile_dir = os.path.expanduser("~/Library/Application Support/IndiaMart-CRM-ChromeProfile")
+                else:
+                    profile_dir = os.path.expanduser("~/.config/indiamart-crm-profile")
                 os.makedirs(profile_dir, exist_ok=True)
 
                 launch_kwargs = {
